@@ -56,7 +56,7 @@ def preflight_checks() -> None:
         sys.exit("ERROR: CUDA is not available. An NVIDIA GPU with CUDA support is required.")
 
     gpu_name = torch.cuda.get_device_name(0)
-    vram_gb = round(torch.cuda.get_device_properties(0).total_mem / 1024**3, 1)
+    vram_gb = round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1)
     print(f"GPU : {gpu_name}  ({vram_gb} GB VRAM)")
     print(f"CUDA: {torch.version.cuda}")
     print(f"PyTorch: {torch.__version__}")
