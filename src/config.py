@@ -1,29 +1,76 @@
+"""
+config.py – Centralised configuration for the OlmoOCR 2 RAG-preprocessing pipeline.
+
+All tunable parameters and filesystem paths are defined here so that
+olmo_ocr_pipeline.py stays clean and easy to adapt.  Every value can be
+overridden at runtime via the corresponding environment variable.
+"""
+
+import os
 from pathlib import Path
 
-# ── Paths ────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-PDF_PATH = DATA_DIR / "LLM_Patterns.pdf"
-PDF_IMAGES_DIR = DATA_DIR / "pdf_images"
-MARKDOWN_DIR = DATA_DIR / "markdown"
-CORPUS_JSON = PROJECT_ROOT / "corpus.json"
-SAMPLE_JSON = PROJECT_ROOT / "sample.json"
+# ---------------------------------------------------------------------------
+# Root paths
+# ---------------------------------------------------------------------------
 
-# ── Model ────────────────────────────────────────────────────────────────────
-MODEL_NAME = "allenai/olmOCR-7B-0225-preview"
-PROCESSOR_NAME = "Qwen/Qwen2-VL-7B-Instruct"
+# Absolute path to the project root (parent of src/)
+BASE_DIR: Path = Path(__file__).resolve().parent.parent
 
-# ── Quantization (4-bit NF4 via bitsandbytes) ───────────────────────────────
-LOAD_IN_4BIT = True
-BNB_4BIT_QUANT_TYPE = "nf4"
-BNB_4BIT_COMPUTE_DTYPE = "bfloat16"
+DATA_DIR: Path = BASE_DIR / "data"
+OUTPUT_DIR: Path = BASE_DIR / "image_and_markdown"
+IMAGES_DIR: Path = OUTPUT_DIR / "images"
 
-# ── Image settings ───────────────────────────────────────────────────────────
-TARGET_LONGEST_IMAGE_DIM = 1024
+# ---------------------------------------------------------------------------
+# Input / output files
+# ---------------------------------------------------------------------------
 
-# ── Generation settings ─────────────────────────────────────────────────────
-MAX_NEW_TOKENS = 4096
-TEMPERATURE = 0.8
+# Path to the source PDF document
+PDF_PATH: Path = DATA_DIR / "document.pdf"
 
-# ── Sample size ──────────────────────────────────────────────────────────────
-SAMPLE_PAGES = 10
+# Destination Markdown file produced by the OCR pipeline
+OUTPUT_MD_PATH: Path = OUTPUT_DIR / "output.md"
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+
+# HuggingFace model identifier for olmOCR 2
+# allenai/olmOCR-7B-0225-preview is a Qwen2-VL checkpoint fine-tuned for OCR
+MODEL_NAME: str = os.environ.get("OLMOCR_MODEL", "allenai/olmOCR-7B-0225-preview")
+
+# Compute device: "cuda" to use GPU, "cpu" to force CPU-only inference,
+# or "auto" to let the library decide (recommended when multiple GPUs are
+# available).
+DEVICE: str = os.environ.get("OLMOCR_DEVICE", "auto")
+
+# ---------------------------------------------------------------------------
+# PDF rendering
+# ---------------------------------------------------------------------------
+
+# DPI used when rasterising PDF pages (higher = better quality, more VRAM)
+PDF_RENDER_DPI: int = int(os.environ.get("OLMOCR_DPI", "150"))
+
+# Maximum image width sent to the model (pixels). Pages wider than this are
+# downscaled while preserving the aspect ratio.
+MAX_IMAGE_WIDTH: int = int(os.environ.get("OLMOCR_MAX_WIDTH", "1024"))
+
+# Maximum image height sent to the model (pixels).
+MAX_IMAGE_HEIGHT: int = int(os.environ.get("OLMOCR_MAX_HEIGHT", "1024"))
+
+# ---------------------------------------------------------------------------
+# Generation / inference
+# ---------------------------------------------------------------------------
+
+# Maximum number of new tokens the model is allowed to generate per page.
+MAX_NEW_TOKENS: int = int(os.environ.get("OLMOCR_MAX_TOKENS", "4096"))
+
+# Temperature for sampling (0 = greedy / deterministic).
+TEMPERATURE: float = float(os.environ.get("OLMOCR_TEMPERATURE", "0.0"))
+
+# ---------------------------------------------------------------------------
+# Extraction
+# ---------------------------------------------------------------------------
+
+# Minimum pixel area for an embedded image to be extracted from the PDF.
+# Images smaller than this are silently ignored (e.g. decorative bullets).
+MIN_IMAGE_AREA: int = int(os.environ.get("OLMOCR_MIN_IMAGE_AREA", "5000"))

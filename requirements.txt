@@ -1,9 +1,34 @@
-torch>=2.7.0
-torchvision>=0.22.0
-transformers>=4.49.0
-accelerate>=1.3.0
-bitsandbytes>=0.45.0
-Pillow>=10.0.0
+# OlmoOCR 2 RAG-preprocessing pipeline – Python dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# GPU-accelerated inference requires a CUDA-capable PyTorch wheel.
+# See https://pytorch.org/get-started/locally/ for platform-specific commands.
+
+# ── Core deep-learning stack ────────────────────────────────────────────────
+torch>=2.2.0
+torchvision>=0.17.0
+
+# ── HuggingFace ecosystem ───────────────────────────────────────────────────
+# transformers: loads and runs the Qwen2-VL based olmOCR 2 model
+transformers>=4.46.0
+# accelerate: enables efficient multi-GPU / CPU-offload device mapping
+accelerate>=0.33.0
+# huggingface_hub: model weight downloads and caching
+huggingface_hub>=0.24.0
+
+# ── Qwen2-VL utilities ──────────────────────────────────────────────────────
+# Required by the Qwen2-VL processor for vision inputs
 qwen-vl-utils>=0.0.8
+
+# ── PDF handling ────────────────────────────────────────────────────────────
+# PyMuPDF: renders PDF pages to images and extracts embedded graphics
+pymupdf>=1.24.0
+
+# ── Image processing ────────────────────────────────────────────────────────
+Pillow>=10.0.0
+
+# ── Utilities ───────────────────────────────────────────────────────────────
+# tqdm: optional progress bars (used internally by transformers/HF hub)
 tqdm>=4.66.0
-olmocr>=0.1.0
