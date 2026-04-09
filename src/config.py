@@ -3,21 +3,19 @@ from pathlib import Path
 # ── Paths ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-PDF_PATH = DATA_DIR / "mml-book-247-267.pdf"
+PDF_PATH = DATA_DIR / "mml-book_10_20.pdf"
 PDF_IMAGES_DIR = DATA_DIR / "pdf_images"
 MARKDOWN_DIR = DATA_DIR / "markdown"
 EXTRACTED_IMAGES_DIR = DATA_DIR / "extracted_images"
 CORPUS_JSON = PROJECT_ROOT / "corpus.json"
 SAMPLE_JSON = PROJECT_ROOT / "sample.json"
 
-# ── Model ────────────────────────────────────────────────────────────────────
-MODEL_NAME = "allenai/olmOCR-7B-0225-preview"
-PROCESSOR_NAME = "Qwen/Qwen2-VL-7B-Instruct"
-
-# ── Quantization (4-bit NF4 via bitsandbytes) ───────────────────────────────
-LOAD_IN_4BIT = True
-BNB_4BIT_QUANT_TYPE = "nf4"
-BNB_4BIT_COMPUTE_DTYPE = "bfloat16"
+# ── LM Studio API ───────────────────────────────────────────────────────────
+API_BASE_URL = "http://localhost:1234/v1"
+API_MODELS = [
+    "allenai/olmocr-2-7b",
+    "allenai/olmocr-2-7b:2",
+]
 
 # ── Image settings ───────────────────────────────────────────────────────────
 TARGET_LONGEST_IMAGE_DIM = 1024

@@ -1,8 +1,8 @@
 """
-OLMo OCR 2 Pipeline
-===================
+OLMo OCR 2 Pipeline (LM Studio API)
+====================================
 Converts a PDF into page images + markdown using OLMo OCR 2 (7B)
-quantized to 4-bit (NF4) to fit on an RTX 4060 8 GB.
+served via LM Studio's OpenAI-compatible API.
 
 Outputs:
     - data/pdf_images/page_XXX.png   (rendered page images)
@@ -15,14 +15,14 @@ import base64
 import json
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 import re
 
-import torch
+from openai import OpenAI
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2VLForConditionalGeneration
 
 # ── olmocr utilities ─────────────────────────────────────────────────────────
 from olmocr.data.renderpdf import render_pdf_to_base64png
@@ -32,16 +32,13 @@ from olmocr.prompts.anchor import get_anchor_text
 # ── project config ───────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.config import (
-    BNB_4BIT_COMPUTE_DTYPE,
-    BNB_4BIT_QUANT_TYPE,
+    API_BASE_URL,
+    API_MODELS,
     CORPUS_JSON,
-    LOAD_IN_4BIT,
     MARKDOWN_DIR,
     MAX_NEW_TOKENS,
-    MODEL_NAME,
     PDF_IMAGES_DIR,
     PDF_PATH,
-    PROCESSOR_NAME,
     SAMPLE_JSON,
     SAMPLE_PAGES,
     TARGET_LONGEST_IMAGE_DIM,
@@ -54,17 +51,19 @@ from src.config import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def preflight_checks() -> None:
-    if not torch.cuda.is_available():
-        sys.exit("ERROR: CUDA is not available. An NVIDIA GPU with CUDA support is required.")
-
-    gpu_name = torch.cuda.get_device_name(0)
-    vram_gb = round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1)
-    print(f"GPU : {gpu_name}  ({vram_gb} GB VRAM)")
-    print(f"CUDA: {torch.version.cuda}")
-    print(f"PyTorch: {torch.__version__}")
-
     if not PDF_PATH.exists():
         sys.exit(f"ERROR: PDF not found at {PDF_PATH}")
+
+    # Verify LM Studio API is reachable
+    client = OpenAI(base_url=API_BASE_URL, api_key="lm-studio")
+    try:
+        client.models.list()
+        print(f"LM Studio API: {API_BASE_URL} — connected")
+        print(f"Workers: {len(API_MODELS)} models loaded")
+        for m in API_MODELS:
+            print(f"  - {m}")
+    except Exception as e:
+        sys.exit(f"ERROR: Cannot reach LM Studio API at {API_BASE_URL}\n  {e}")
 
     PDF_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
@@ -138,39 +137,23 @@ def render_pages(pdf_path: Path, num_pages: int) -> list[Path]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Stage B — Load model (4-bit quantized)
+# Stage B — Create API client
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_model():
-    """Load OLMo OCR model in 4-bit NF4 quantization."""
+def create_clients() -> list[tuple[OpenAI, str]]:
+    """Create one OpenAI client per loaded model in LM Studio."""
     print(f"\n{'='*60}")
-    print("Stage B — Loading model (4-bit NF4 quantization)")
+    print(f"Stage B — Connecting to LM Studio API ({len(API_MODELS)} workers)")
     print(f"{'='*60}")
+    print(f"  Endpoint: {API_BASE_URL}")
 
-    compute_dtype = getattr(torch, BNB_4BIT_COMPUTE_DTYPE)
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=LOAD_IN_4BIT,
-        bnb_4bit_quant_type=BNB_4BIT_QUANT_TYPE,
-        bnb_4bit_compute_dtype=compute_dtype,
-        bnb_4bit_use_double_quant=True,
-    )
+    workers = []
+    for model_id in API_MODELS:
+        client = OpenAI(base_url=API_BASE_URL, api_key="lm-studio")
+        workers.append((client, model_id))
+        print(f"  Worker: {model_id}")
 
-    print(f"  Model: {MODEL_NAME}")
-    print(f"  Quantization: 4-bit {BNB_4BIT_QUANT_TYPE}, compute dtype: {BNB_4BIT_COMPUTE_DTYPE}")
-
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=compute_dtype,
-    )
-    model.eval()
-
-    processor = AutoProcessor.from_pretrained(PROCESSOR_NAME)
-
-    vram_used = torch.cuda.memory_allocated(0) / 1024**3
-    print(f"  Model loaded — VRAM used: {vram_used:.1f} GB")
-    return model, processor
+    return workers
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -178,14 +161,13 @@ def load_model():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def ocr_page(
-    model,
-    processor,
+    client: OpenAI,
+    model_id: str,
     pdf_path: Path,
     page_num: int,
     image_path: Path,
 ) -> str:
-    """Run OCR on a single page and return the markdown text."""
-    # Read the already-rendered image
+    """Run OCR on a single page via the LM Studio API and return the markdown text."""
     img_b64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
 
     # Build prompt with anchor text from the PDF text layer
@@ -201,43 +183,25 @@ def ocr_page(
         "- Do not wrap the entire answer in markdown code fences.\n"
     )
 
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-            ],
-        }
-    ]
-
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    main_image = Image.open(image_path).convert("RGB")
-
-    inputs = processor(
-        text=[text],
-        images=[main_image],
-        padding=True,
-        return_tensors="pt",
+    response = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+                    },
+                ],
+            }
+        ],
+        max_tokens=MAX_NEW_TOKENS,
+        temperature=TEMPERATURE,
     )
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    with torch.no_grad():
-        output = model.generate(
-            **inputs,
-            temperature=TEMPERATURE,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=True,
-        )
-
-    prompt_length = inputs["input_ids"].shape[1]
-    new_tokens = output[:, prompt_length:]
-    result = processor.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
-
-    del inputs, output, new_tokens
-    torch.cuda.empty_cache()
-
-    return result
+    return response.choices[0].message.content
 
 
 def normalize_markdown_latex(text: str) -> str:
@@ -278,22 +242,46 @@ def normalize_markdown_latex(text: str) -> str:
     return cleaned.strip() + "\n"
 
 
-def run_ocr(model, processor, pdf_path: Path, image_paths: list[Path]) -> list[dict]:
-    """Run OCR on all pages and save markdown files."""
+def run_ocr(workers: list[tuple[OpenAI, str]], pdf_path: Path, image_paths: list[Path]) -> list[dict]:
+    """Run OCR on all pages using multiple workers in parallel."""
+    num_workers = len(workers)
     print(f"\n{'='*60}")
-    print(f"Stage C — Running OCR on {len(image_paths)} pages")
+    print(f"Stage C — Running OCR on {len(image_paths)} pages ({num_workers} workers)")
     print(f"{'='*60}")
 
-    pages: list[dict] = []
+    results: dict[int, str] = {}
     source_name = pdf_path.name
-    for idx, img_path in enumerate(tqdm(image_paths, desc="OCR pages"), start=1):
-        md_text = ocr_page(model, processor, pdf_path, idx, img_path)
-        md_text = normalize_markdown_latex(md_text)
 
-        # Save per-page markdown
-        md_path = MARKDOWN_DIR / f"page_{idx:03d}.md"
-        md_path.write_text(md_text, encoding="utf-8")
+    def _process_page(idx: int, img_path: Path, worker_idx: int) -> tuple[int, str]:
+        client, model_id = workers[worker_idx]
+        md_text = ocr_page(client, model_id, pdf_path, idx, img_path)
+        return idx, md_text
 
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = {}
+        for i, img_path in enumerate(image_paths):
+            idx = i + 1
+            worker_idx = i % num_workers
+            future = executor.submit(_process_page, idx, img_path, worker_idx)
+            futures[future] = idx
+
+        with tqdm(total=len(image_paths), desc="OCR pages") as pbar:
+            for future in as_completed(futures):
+                idx = futures[future]
+                md_text = future.result()[1]
+                md_text = normalize_markdown_latex(md_text)
+
+                md_path = MARKDOWN_DIR / f"page_{idx:03d}.md"
+                md_path.write_text(md_text, encoding="utf-8")
+
+                results[idx] = md_text
+                pbar.update(1)
+                tqdm.write(f"  page {idx:03d}: {len(md_text)} chars")
+
+    # Build pages list in order
+    pages = []
+    for idx in sorted(results.keys()):
+        md_text = results[idx]
         pages.append(
             {
                 "source": source_name,
@@ -302,7 +290,6 @@ def run_ocr(model, processor, pdf_path: Path, image_paths: list[Path]) -> list[d
                 "text": md_text,
             }
         )
-        tqdm.write(f"  page {idx:03d}: {len(md_text)} chars")
 
     print(f"  Saved {len(pages)} markdown files to {MARKDOWN_DIR}")
     return pages
@@ -338,11 +325,11 @@ def main() -> None:
     # Stage A — render pages
     image_paths = render_pages(PDF_PATH, num_pages)
 
-    # Stage B — load model
-    model, processor = load_model()
+    # Stage B — connect to API (one client per worker)
+    workers = create_clients()
 
-    # Stage C — OCR
-    pages = run_ocr(model, processor, PDF_PATH, image_paths)
+    # Stage C — OCR (parallel across workers)
+    pages = run_ocr(workers, PDF_PATH, image_paths)
 
     # Stage D — save outputs
     save_json_outputs(pages)
